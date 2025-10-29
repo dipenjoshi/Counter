@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Counter Dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z'/%3E%3C/svg%3E" type="image/svg+xml">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Ensure canvas fits its container and is responsive */
+        canvas {
+            background-color: #f9fafb; /* Light gray background for canvas */
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100 p-8 font-sans antialiased flex flex-col items-center">
+
+    <h1 class="text-4xl font-extrabold text-center text-gray-900 mb-10">
+        Counter Dashboard
+    </h1>
+
+    <div id="app-root" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-6xl mx-auto w-full">
+        </div>
+
+    <div id="confirmation-modal" class="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 hidden">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm mx-auto text-center">
+            <p id="confirmation-message" class="text-lg font-semibold text-gray-800 mb-4"></p>
+            <div class="flex justify-center space-x-4">
+                <button id="confirm-action" class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700">Confirm</button>
+                <button id="cancel-action" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-400">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // IndexedDB Helper Functions
+        const DB_NAME = 'CounterAppDB';
+        const STORE_NAME = 'counters';
+        // Increment DB_VERSION to trigger onupgradeneeded if the store was not created
+        const DB_VERSION = 2; 
+
+        /**
+         * Opens the IndexedDB database.
+         * @returns {Promise<IDBDatabase>} A promise that resolves with the database instance.
+         */
+        const openDB = () => {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    console.log('IndexedDB upgrade needed. Creating object store:', STORE_NAME);
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                    }
+                };
+
+                request.onsuccess = (event) => {
+                    resolve(event.target.result);
+                };
+
+                request.onerror = (event) => {
+                    console.error("IndexedDB error:", event.target.errorCode);
+                    reject(event.target.error);
+                };
+            });
+        };
+
+        /**
+         * Adds a new counter to IndexedDB.
+         * @param {object} counter - The counter object to add.
+         * @returns {Promise<void>} A promise that resolves when the counter is added.
+         */
+        const addCounterDB = async (counter) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([STORE_NAME], 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.add(counter);
+
+                request.onsuccess = () => resolve();
+                request.onerror = (event) => reject(event.target.error);
+            });
+        };
+
+        /**
+         * Updates an existing counter in IndexedDB.
+         * @param {object} counter - The counter object to update.
+         * @returns {Promise<void>} A promise that resolves when the counter is updated.
+         */
+        const updateCounterDB = async (counter) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([STORE_NAME], 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.put(counter); // Use put for update/insert
+
+                request.onsuccess = () => resolve();
+                request.onerror = (event) => reject(event.target.error);
+            });
+        };
+
+        /**
+         * Retrieves all counters from IndexedDB.
+         * @returns {Promise<Array<object>>} A promise that resolves with an array of counter objects.
+         */
+        const getAllCountersDB = async () => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([STORE_NAME], 'readonly');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.getAll();
+
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = (event) => reject(event.target.error);
+            });
+        };
+
+        /**
+         * Deletes a counter from IndexedDB.
+         * @param {string} id - The ID of the counter to delete.
+         * @returns {Promise<void>} A promise that resolves when the counter is deleted.
+         */
+        const deleteCounterDB = async (id) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([STORE_NAME], 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.delete(id);
+
+                request.onsuccess = () => resolve();
+                request.onerror = (event) => reject(event.target.error);
+            });
+        };
+
+        // Global state for counters
+        let counters = [];
+        let draggedId = null; // To store the ID of the tile being dragged
+
+        // Confirmation Modal elements
+        const confirmationModal = document.getElementById('confirmation-modal');
+        const confirmationMessage = document.getElementById('confirmation-message');
+        const confirmActionBtn = document.getElementById('confirm-action');
+        const cancelActionBtn = document.getElementById('cancel-action');
+        let confirmCallback = null;
+
+        /**
+         * Shows a custom modal.
+         * @param {HTMLElement} modalElement - The modal element to show.
+         */
+        const showModal = (modalElement) => {
+            modalElement.classList.remove('hidden');
+        };
+
+        /**
+         * Hides a custom modal.
+         * @param {HTMLElement} modalElement - The modal element to hide.
+         */
+        const hideModal = (modalElement) => {
+            modalElement.classList.add('hidden');
+        };
+
+        /**
+         * Shows a confirmation modal with a message and callback.
+         * @param {string} message - The message to display.
+         * @param {function} callback - The function to call if confirmed.
+         */
+        const showConfirmationModal = (message, callback) => {
+            confirmationMessage.textContent = message;
+            confirmCallback = callback;
+            showModal(confirmationModal);
+        };
+
+        // Event listeners for the confirmation modal buttons
+        confirmActionBtn.addEventListener('click', () => {
+            if (confirmCallback) {
+                confirmCallback();
+            }
+            hideModal(confirmationModal);
+        });
+
+        cancelActionBtn.addEventListener('click', () => {
+            hideModal(confirmationModal);
+        });
+
+        /**
+         * Draws a bar chart on a given canvas.
+         * @param {HTMLCanvasElement} canvas - The canvas element to draw on.
+         * @param {Array<object>} history - The history data for the counter.
+         * @param {string} viewMode - The current view mode ('Day', 'Week', 'Month').
+         * @param {number} offset - The offset for the current view (0 for current, -1 for previous, etc.).
+         */
+        const drawChart = (canvas, history, viewMode, offset = 0) => {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
+
+            ctx.font = '10px Inter';
+            ctx.fillStyle = '#333';
+
+            // Define chart margins and dimensions
+            const chartMarginLeft = 40; // Space for Y-axis labels
+            const chartMarginBottom = 30; // Space for X-axis labels
+            const chartWidth = canvas.width - chartMarginLeft - 10; // 10px right margin
+            const chartHeight = canvas.height - chartMarginBottom - 10; // 10px top margin
+
+            let dataPoints = [];
+            let labels = [];
+            const now = new Date();
+            let baseDate = new Date(now); // Start with current date
+
+            if (viewMode === 'Day') {
+                baseDate.setDate(now.getDate() + offset); // Adjust base date by offset days
+                const startOfDay = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+                const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+
+                const hourlyData = {};
+
+                history.forEach(entry => {
+                    const entryDate = new Date(entry.timestamp);
+                    if (entryDate >= startOfDay && entryDate < endOfDay) {
+                        const hour = entryDate.getHours();
+                        const key = `${hour}`;
+                        hourlyData[key] = (hourlyData[key] || 0) + entry.value;
+                    }
+                });
+
+                for (let i = 0; i < 24; i++) {
+                    dataPoints.push(hourlyData[i.toString()] || 0);
+                    // Only push a label every 4 hours to reduce clutter
+                    if (i % 4 === 0) { 
+                        labels.push(`${i}:00`);
+                    } else {
+                        labels.push(''); // Push empty string for non-labeled points to maintain array length
+                    }
+                }
+
+            } else if (viewMode === 'Week') {
+                baseDate.setDate(now.getDate() + offset * 7); // Adjust base date by offset weeks
+                // Find the start of the week (Sunday) for the baseDate
+                const dayOfWeek = baseDate.getDay(); // 0 for Sunday, 1 for Monday, etc.
+                const startOfWeek = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() - dayOfWeek);
+                const endOfWeek = new Date(startOfWeek.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+                const dailyData = {};
+
+                history.forEach(entry => {
+                    const entryDate = new Date(entry.timestamp);
+                    if (entryDate >= startOfWeek && entryDate < endOfWeek) {
+                        const dateKey = entryDate.toISOString().split('T')[0];
+                        dailyData[dateKey] = (dailyData[dateKey] || 0) + entry.value;
+                    }
+                });
+
+                for (let i = 0; i < 7; i++) {
+                    const date = new Date(startOfWeek.getTime() + i * 24 * 60 * 60 * 1000);
+                    const dateKey = date.toISOString().split('T')[0];
+                    dataPoints.push(dailyData[dateKey] || 0);
+                    labels.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
+                }
+
+            } else if (viewMode === 'Month') {
+                baseDate.setMonth(now.getMonth() + offset); // Adjust base date by offset months
+                baseDate.setDate(1); // Set to the first day of the month
+                const startOfMonth = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+                const endOfMonth = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0); // Last day of the month
+                const daysInMonth = endOfMonth.getDate();
+
+                const dailyData = {};
+
+                history.forEach(entry => {
+                    const entryDate = new Date(entry.timestamp);
+                    // Ensure entry is within the current month
+                    if (entryDate.getFullYear() === baseDate.getFullYear() && entryDate.getMonth() === baseDate.getMonth()) {
+                        const day = entryDate.getDate();
+                        const dateKey = `${day}`; // Key by day number
+                        dailyData[dateKey] = (dailyData[dateKey] || 0) + entry.value;
+                    }
+                });
+
+                for (let i = 1; i <= daysInMonth; i++) { // Iterate from 1 to daysInMonth
+                    dataPoints.push(dailyData[i.toString()] || 0);
+                    // Only push a label every 5 days to avoid clutter, or for the first/last day
+                    if (i === 1 || i === daysInMonth || i % 5 === 0) {
+                        labels.push(`${i}`);
+                    } else {
+                        labels.push(''); // Push empty string for non-labeled points
+                    }
+                }
+            }
+
+            const maxVal = Math.max(...dataPoints, 1);
+            const barWidth = chartWidth / dataPoints.length;
+            const scaleY = chartHeight / maxVal;
+
+            // Draw bars
+            dataPoints.forEach((val, index) => {
+                const barHeight = val * scaleY;
+                const x = chartMarginLeft + index * barWidth;
+                const y = canvas.height - chartMarginBottom - barHeight;
+
+                ctx.fillStyle = '#6366f1';
+                ctx.fillRect(x, y, barWidth * 0.8, barHeight);
+
+                // Removed text rendering for bar values
+                // ctx.fillStyle = '#333';
+                // ctx.textAlign = 'center';
+                // ctx.fillText(val.toString(), x + barWidth / 2, y - 5);
+            });
+
+            // Draw X-axis line
+            ctx.beginPath();
+            ctx.moveTo(chartMarginLeft, canvas.height - chartMarginBottom);
+            ctx.lineTo(canvas.width - 10, canvas.height - chartMarginBottom);
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+
+            // Draw X-axis labels
+            labels.forEach((label, index) => {
+                ctx.fillStyle = '#333';
+                ctx.textAlign = 'center';
+                // Only draw the label if it's not an empty string
+                if (label !== '') {
+                    ctx.fillText(label, chartMarginLeft + index * barWidth + barWidth / 2, canvas.height - chartMarginBottom + 15);
+                }
+            });
+
+            // Draw Y-axis line
+            ctx.beginPath();
+            ctx.moveTo(chartMarginLeft, 10); // 10px top margin
+            ctx.lineTo(chartMarginLeft, canvas.height - chartMarginBottom);
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+
+            // Draw Y-axis labels and ticks
+            const numYLabels = 3; // For 0, maxVal/2, maxVal
+            for (let i = 0; i < numYLabels; i++) {
+                const value = Math.round(maxVal / (numYLabels - 1) * i);
+                const yPos = canvas.height - chartMarginBottom - (value * scaleY);
+
+                ctx.fillStyle = '#333';
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(value.toString(), chartMarginLeft - 5, yPos);
+
+                // Draw tick mark
+                ctx.beginPath();
+                ctx.moveTo(chartMarginLeft - 3, yPos);
+                ctx.lineTo(chartMarginLeft, yPos);
+                ctx.strokeStyle = '#333';
+                ctx.stroke();
+            }
+
+            // Y-axis label (rotated)
+            ctx.save();
+            ctx.translate(10, canvas.height / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.textAlign = 'center';
+            ctx.fillText('Value', 0, 0);
+            ctx.restore();
+        };
+
+        /**
+         * Creates and returns a chart HTML element.
+         * @param {Array<object>} history - The history data for the counter.
+         * @param {string} initialViewMode - The initial view mode.
+         * @returns {HTMLDivElement} The chart container element.
+         */
+        const createChartElement = (history, initialViewMode) => {
+            const chartContainer = document.createElement('div');
+            chartContainer.className = 'w-full h-48 mt-4 bg-white p-2 rounded-lg shadow-inner flex items-center justify-center';
+
+            const canvas = document.createElement('canvas');
+            canvas.className = 'w-full h-full';
+            chartContainer.appendChild(canvas);
+
+            let currentViewMode = initialViewMode;
+            let currentOffset = 0; // 0 for current period, -1 for previous, etc.
+
+            // Function to resize canvas and redraw chart
+            const resizeAndDraw = () => {
+                canvas.width = canvas.offsetWidth;
+                canvas.height = canvas.offsetHeight;
+                drawChart(canvas, history, currentViewMode, currentOffset);
+            };
+
+            // Removed setTimeout(resizeAndDraw, 0) from here.
+            // The chart will now be drawn when the tile is expanded and becomes visible.
+
+            // Add resize listener
+            window.addEventListener('resize', resizeAndDraw);
+
+            // Store resize handler on canvas for cleanup if needed (though not strictly necessary for this app)
+            canvas._resizeHandler = resizeAndDraw;
+
+            // Method to update chart view mode
+            chartContainer.updateViewMode = (newViewMode) => {
+                currentViewMode = newViewMode;
+                currentOffset = 0; // Reset offset when changing view mode
+                drawChart(canvas, history, currentViewMode, currentOffset);
+            };
+
+            // Method to update chart history
+            chartContainer.updateHistory = (newHistory) => {
+                history = newHistory;
+                drawChart(canvas, history, currentViewMode, currentOffset);
+            };
+
+            // Method to update chart offset (for navigation)
+            chartContainer.updateOffset = (newOffset) => {
+                currentOffset = newOffset;
+                drawChart(canvas, history, currentViewMode, currentOffset);
+            };
+
+            return chartContainer;
+        };
+
+        /**
+         * Calculates today's total count for a given counter history.
+         * @param {Array<object>} history - The history data for the counter.
+         * @returns {number} The total count for today.
+         */
+        const getTodaysCount = (history) => {
+            const now = new Date();
+            const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            return history.reduce((sum, entry) => {
+                const entryDate = new Date(entry.timestamp);
+                if (entryDate >= startOfDay) {
+                    return sum + entry.value;
+                }
+                return sum;
+            }, 0);
+        };
+
+        /**
+         * Creates and returns a counter tile HTML element.
+         * @param {object} counter - The counter object.
+         * @param {function} onUpdateCounter - Callback to update the counter in the main app state and DB.
+         * @param {function} onDeleteCounter - Callback to delete the counter.
+         * @returns {HTMLDivElement} The counter tile element.
+         */
+        const createCounterTile = (counter, onUpdateCounter, onDeleteCounter) => {
+            const tile = document.createElement('div');
+            // Changed min-h-[350px] to be controlled by style.minHeight and added transition-all
+            tile.className = 'bg-white p-6 rounded-xl shadow-lg flex flex-col items-center justify-between w-full md:w-96 relative transition-all duration-300 ease-in-out';
+            
+            // Apply the random background color
+            if (counter.color) {
+                tile.style.backgroundColor = counter.color;
+            }
+            tile.dataset.id = counter.id; // Store ID on the element
+
+            // Make the tile draggable
+            tile.draggable = true;
+
+            tile.addEventListener('dragstart', (e) => {
+                draggedId = counter.id;
+                e.dataTransfer.setData('text/plain', counter.id); // Set data for cross-browser compatibility
+                e.currentTarget.classList.add('opacity-50', 'border-2', 'border-indigo-500'); // Visual feedback for dragging
+            });
+
+            tile.addEventListener('dragover', (e) => {
+                e.preventDefault(); // Crucial to allow dropping
+                // Add a visual indicator for potential drop target
+                if (e.currentTarget.dataset.id !== draggedId) {
+                    e.currentTarget.classList.add('border-2', 'border-dashed', 'border-indigo-700');
+                }
+            });
+
+            tile.addEventListener('dragenter', (e) => {
+                e.preventDefault();
+                if (e.currentTarget.dataset.id !== draggedId) {
+                    e.currentTarget.classList.add('border-2', 'border-dashed', 'border-indigo-700');
+                }
+            });
+
+            tile.addEventListener('dragleave', (e) => {
+                e.currentTarget.classList.remove('border-2', 'border-dashed', 'border-indigo-700');
+            });
+
+            tile.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('border-2', 'border-dashed', 'border-indigo-700');
+
+                const targetId = e.currentTarget.dataset.id;
+                if (draggedId === targetId || draggedId === null) {
+                    return; // Dropped on itself or no item being dragged
+                }
+
+                const draggedIndex = counters.findIndex(c => c.id === draggedId);
+                const targetIndex = counters.findIndex(c => c.id === targetId);
+
+                if (draggedIndex === -1 || targetIndex === -1) {
+                    return; // Should not happen
+                }
+
+                // Reorder the array
+                const [draggedItem] = counters.splice(draggedIndex, 1);
+                counters.splice(targetIndex, 0, draggedItem);
+
+                // Update orderIndex for all counters and persist
+                for (let i = 0; i < counters.length; i++) {
+                    counters[i].orderIndex = i;
+                    await updateCounterDB(counters[i]); // Persist the new orderIndex
+                }
+
+                renderApp(); // Re-render the app to reflect the new order
+            });
+
+            tile.addEventListener('dragend', (e) => {
+                e.currentTarget.classList.remove('opacity-50', 'border-2', 'border-indigo-500');
+                draggedId = null; // Reset dragged ID
+                // Remove any lingering drop target styles from all tiles
+                document.querySelectorAll('.border-dashed').forEach(el => {
+                    el.classList.remove('border-2', 'border-dashed', 'border-indigo-700');
+                });
+            });
+
+            // Container for action buttons, positioned absolutely on the left
+            const actionButtonsContainer = document.createElement('div');
+            actionButtonsContainer.className = 'absolute top-2 left-2 flex space-x-1'; // Changed to left-2
+            tile.appendChild(actionButtonsContainer);
+
+            // Collapse button (moved to be appended first for left alignment)
+            const collapseButton = document.createElement('button');
+            collapseButton.className = 'p-1 rounded-full text-gray-500 hover:bg-gray-200 transition duration-150 ease-in-out';
+            const collapseIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            collapseIcon.setAttribute("class", "h-5 w-5");
+            collapseIcon.setAttribute("fill", "none");
+            collapseIcon.setAttribute("viewBox", "0 0 24 24");
+            collapseIcon.setAttribute("stroke", "currentColor");
+            collapseIcon.setAttribute("stroke-width", "2");
+            const collapsePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            collapsePath.setAttribute("stroke-linecap", "round");
+            collapsePath.setAttribute("stroke-linejoin", "round");
+            // Initial state: collapsed (chevron right)
+            collapsePath.setAttribute("d", "M9 5l7 7-7 7"); 
+            collapseIcon.appendChild(collapsePath);
+            collapseButton.appendChild(collapseIcon);
+            actionButtonsContainer.appendChild(collapseButton); // Appended first
+
+            // Edit button (now appended after collapse)
+            const editButton = document.createElement('button');
+            editButton.className = 'p-1 rounded-full text-gray-500 hover:bg-gray-200 transition duration-150 ease-in-out';
+            editButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L7.5 21H3v-4.5L15.232 5.232z" />
+                </svg>
+            `;
+            actionButtonsContainer.appendChild(editButton);
+
+            // Delete button (remains last)
+            const deleteButton = document.createElement('button');
+            deleteButton.className = 'p-1 rounded-full text-red-500 hover:bg-red-100 transition duration-150 ease-in-out';
+            deleteButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+            `;
+            deleteButton.onclick = () => {
+                showConfirmationModal('Are you sure you want to delete this counter?', async () => {
+                    await onDeleteCounter(counter.id);
+                });
+            };
+            actionButtonsContainer.appendChild(deleteButton);
+
+
+            const titleElement = document.createElement('h2');
+            titleElement.className = 'text-2xl font-semibold text-gray-800 mb-4 text-center w-full'; // Centered title
+            titleElement.textContent = counter.title;
+            tile.appendChild(titleElement); // Title is now a direct child of the tile
+
+            editButton.onclick = () => {
+                const inputField = document.createElement('input');
+                inputField.type = 'text';
+                inputField.value = titleElement.textContent;
+                inputField.className = 'text-2xl font-semibold text-gray-800 text-center border-b-2 border-indigo-500 focus:outline-none focus:border-indigo-700 w-full mb-4';
+                
+                // Replace h2 with input in its parent (which is now the tile itself)
+                tile.replaceChild(inputField, titleElement);
+                // Remove edit button during editing, but keep other buttons
+                editButton.classList.add('hidden'); 
+                inputField.focus();
+
+                const saveTitle = async () => {
+                    const newTitle = inputField.value.trim();
+                    if (newTitle && newTitle !== counter.title) {
+                        const updatedCounter = { ...counter, title: newTitle };
+                        await onUpdateCounter(updatedCounter);
+                        // titleElement.textContent will be updated by tile.updateContent
+                    } else {
+                        titleElement.textContent = counter.title; // Revert if empty or same
+                    }
+                    // Replace input with h2 and re-add edit button
+                    tile.replaceChild(titleElement, inputField);
+                    editButton.classList.remove('hidden'); // Show edit button again
+                };
+
+                inputField.addEventListener('blur', saveTitle);
+                inputField.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        saveTitle();
+                    }
+                });
+            };
+
+
+            const counterControls = document.createElement('div');
+            counterControls.className = 'flex space-x-4 mb-6';
+            tile.appendChild(counterControls);
+
+            const decrementButton = document.createElement('button');
+            decrementButton.className = 'bg-red-500 hover:bg-red-600 text-white text-4xl font-bold rounded-full w-16 h-16 flex items-center justify-center shadow-md transition duration-300 ease-in-out transform hover:scale-105';
+            decrementButton.textContent = '-';
+            decrementButton.onclick = () => {
+                const newHistory = [...counter.history, { timestamp: new Date().toISOString(), value: -1 }];
+                onUpdateCounter({ ...counter, history: newHistory });
+            };
+            counterControls.appendChild(decrementButton);
+
+            const totalSpan = document.createElement('span');
+            totalSpan.className = 'text-5xl font-extrabold text-indigo-700 flex items-center justify-center';
+            totalSpan.textContent = getTodaysCount(counter.history); // Display today's count
+            counterControls.appendChild(totalSpan);
+
+            const incrementButton = document.createElement('button');
+            incrementButton.className = 'bg-green-500 hover:bg-green-600 text-white text-4xl font-bold rounded-full w-16 h-16 flex items-center justify-center shadow-md transition duration-300 ease-in-out transform hover:scale-105';
+            incrementButton.textContent = '+';
+            incrementButton.onclick = () => {
+                const newHistory = [...counter.history, { timestamp: new Date().toISOString(), value: 1 }];
+                onUpdateCounter({ ...counter, history: newHistory });
+            };
+            counterControls.appendChild(incrementButton);
+
+            // Collapsible content wrapper
+            const collapsibleContent = document.createElement('div');
+            collapsibleContent.className = 'flex flex-col items-center w-full transition-all duration-300 ease-in-out overflow-hidden';
+            tile.appendChild(collapsibleContent);
+
+            const viewModeNavigation = document.createElement('div');
+            viewModeNavigation.className = 'flex items-center space-x-2 mb-4 w-full justify-center';
+            collapsibleContent.appendChild(viewModeNavigation); // Append to collapsibleContent
+
+            let currentViewMode = 'Day'; // Default view mode for this tile
+            let currentOffset = 0; // Offset for chart navigation
+
+            // Left arrow button
+            const leftArrowButton = document.createElement('button');
+            leftArrowButton.className = 'px-3 py-1 rounded-full bg-gray-200 text-gray-700 hover:bg-gray-300 transition duration-300 ease-in-out';
+            leftArrowButton.innerHTML = '&lt;'; // Left arrow HTML entity
+            leftArrowButton.onclick = () => {
+                currentOffset--;
+                chartElement.updateOffset(currentOffset);
+            };
+            viewModeNavigation.appendChild(leftArrowButton);
+
+            const viewModeContainer = document.createElement('div');
+            viewModeContainer.className = 'flex space-x-2'; // Inner container for Day/Week/Month buttons
+            viewModeNavigation.appendChild(viewModeContainer);
+
+            ['Day', 'Week', 'Month'].forEach(mode => {
+                const button = document.createElement('button');
+                button.textContent = mode;
+                button.className = `px-4 py-2 rounded-full text-sm font-medium transition duration-300 ease-in-out ${
+                    currentViewMode === mode
+                        ? 'bg-indigo-600 text-white shadow-md'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                }`;
+                button.onclick = () => {
+                    currentViewMode = mode;
+                    // Update button styles
+                    Array.from(viewModeContainer.children).forEach(btn => {
+                        btn.className = `px-4 py-2 rounded-full text-sm font-medium transition duration-300 ease-in-out ${
+                            currentViewMode === btn.textContent
+                                ? 'bg-indigo-600 text-white shadow-md'
+                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                        }`;
+                    });
+                    chartElement.updateViewMode(currentViewMode); // Update the chart and reset offset
+                };
+                viewModeContainer.appendChild(button);
+            });
+
+            // Right arrow button
+            const rightArrowButton = document.createElement('button');
+            rightArrowButton.className = 'px-3 py-1 rounded-full bg-gray-200 text-gray-700 hover:bg-gray-300 transition duration-300 ease-in-out';
+            rightArrowButton.innerHTML = '&gt;'; // Right arrow HTML entity
+            rightArrowButton.onclick = () => {
+                if (currentOffset < 0) { // Prevent going into the future beyond current period
+                    currentOffset++;
+                    chartElement.updateOffset(currentOffset);
+                }
+            };
+            viewModeNavigation.appendChild(rightArrowButton);
+
+
+            const chartElement = createChartElement(counter.history, currentViewMode);
+            collapsibleContent.appendChild(chartElement); // Append to collapsibleContent
+
+            // Toggle collapse functionality
+            let isCollapsed = true; // Initial state: collapsed
+
+            const toggleCollapse = () => {
+                isCollapsed = !isCollapsed;
+                if (isCollapsed) {
+                    collapsibleContent.classList.add('hidden');
+                    tile.style.minHeight = '150px'; // Shrink height when collapsed
+                    collapsePath.setAttribute("d", "M9 5l7 7-7 7"); // Chevron right
+                } else {
+                    collapsibleContent.classList.remove('hidden');
+                    tile.style.minHeight = '350px'; // Restore height when expanded
+                    collapsePath.setAttribute("d", "M19 9l-7 7-7-7"); // Chevron down
+                    // Re-draw chart when expanded to ensure it renders correctly
+                    chartElement.updateHistory(counter.history);
+                }
+            };
+            collapseButton.onclick = toggleCollapse;
+
+            // Apply initial collapsed state
+            if (isCollapsed) {
+                collapsibleContent.classList.add('hidden');
+                tile.style.minHeight = '150px';
+                collapsePath.setAttribute("d", "M9 5l7 7-7 7");
+            }
+
+
+            // Method to update the tile's content (e.g., after increment/decrement)
+            tile.updateContent = (updatedCounter) => {
+                counter = updatedCounter; // Update the local counter object
+                totalSpan.textContent = getTodaysCount(counter.history); // Update to today's count
+                // Only update chart if not collapsed
+                if (!isCollapsed) {
+                    chartElement.updateHistory(counter.history); // Update chart with new history
+                }
+                // Ensure titleElement is updated only if it's currently displayed (not the input field)
+                if (titleElement.parentNode) { // Check if titleElement is still in the DOM
+                    titleElement.textContent = updatedCounter.title;
+                }
+                if (updatedCounter.color) { // Update tile color if it changes (though it shouldn't after creation)
+                    tile.style.backgroundColor = updatedCounter.color;
+                }
+            };
+
+            return tile;
+        };
+
+        /**
+         * Generates a random faint HSL color.
+         * @returns {string} An HSL color string.
+         */
+        const getRandomFaintColor = () => {
+            const hue = Math.floor(Math.random() * 360); // 0-359
+            const saturation = 50 + Math.floor(Math.random() * 20); // 50-70% for faintness
+            const lightness = 90 + Math.floor(Math.random() * 5); // 90-95% for faintness
+            return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+        };
+
+        /**
+         * Creates and returns the "Add New Counter" button element.
+         * @param {function} onAddTile - Callback to add a new tile.
+         * @returns {HTMLDivElement} The add tile button element.
+         */
+        const createAddTileButton = (onAddTile) => {
+            const addButton = document.createElement('div');
+            addButton.className = 'bg-gradient-to-br from-indigo-500 to-purple-600 p-6 rounded-xl shadow-lg flex flex-col items-center justify-center cursor-pointer min-h-[350px] w-full md:w-96 transform transition duration-300 ease-in-out hover:scale-105 hover:shadow-xl';
+
+            const plusIcon = document.createElement('div');
+            plusIcon.className = 'text-white text-8xl font-light mb-4';
+            plusIcon.textContent = '+';
+            addButton.appendChild(plusIcon);
+
+            const text = document.createElement('p');
+            text.className = 'text-white text-xl font-medium';
+            text.textContent = 'Add New Counter';
+            addButton.appendChild(text);
+
+            addButton.onclick = () => {
+                const title = prompt('Enter title for the new counter:');
+                if (title && title.trim()) {
+                    onAddTile(title.trim());
+                }
+            };
+            return addButton;
+        };
+
+        /**
+         * Renders all counter tiles and the add button to the DOM.
+         */
+        const renderApp = () => {
+            const appRoot = document.getElementById('app-root');
+            appRoot.innerHTML = ''; // Clear existing content
+
+            // Sort counters by orderIndex before rendering
+            counters.sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0));
+
+            // Render existing counters
+            counters.forEach(counter => {
+                const tileElement = createCounterTile(counter, handleUpdateCounter, handleDeleteCounter);
+                appRoot.appendChild(tileElement);
+            });
+
+            // Render the Add New Counter button
+            const addTileButton = createAddTileButton(handleAddTile);
+            appRoot.appendChild(addTileButton);
+        };
+
+        /**
+         * Handles adding a new counter.
+         * @param {string} title - The title for the new counter.
+         */
+        const handleAddTile = async (title) => {
+            const newCounter = {
+                id: crypto.randomUUID(), // Generate a unique ID
+                title: title,
+                history: [], // Initialize with empty history
+                color: getRandomFaintColor(), // Assign a random faint color
+                orderIndex: counters.length // Assign order index for persistence
+            };
+            try {
+                await addCounterDB(newCounter);
+                counters.push(newCounter);
+                renderApp(); // Re-render the app to show the new counter
+            } catch (error) {
+                console.error('Error adding counter:', error);
+                showConfirmationModal('Failed to add counter. Please try again.', () => {});
+            }
+        };
+
+        /**
+         * Handles updating an existing counter.
+         * @param {object} updatedCounter - The updated counter object.
+         */
+        const handleUpdateCounter = async (updatedCounter) => {
+            try {
+                await updateCounterDB(updatedCounter); 
+                const index = counters.findIndex(c => c.id === updatedCounter.id);
+                if (index !== -1) {
+                    counters[index] = updatedCounter; // Update the local state
+                    // Find the specific tile element and update its content
+                    const tileElement = document.querySelector(`[data-id="${updatedCounter.id}"]`);
+                    if (tileElement && typeof tileElement.updateContent === 'function') {
+                        tileElement.updateContent(updatedCounter);
+                    } else {
+                        // If tile not found or updateContent isn't available, re-render all
+                        renderApp();
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating counter:', error);
+                showConfirmationModal('Failed to update counter. Please try again.', () => {});
+            }
+        };
+
+        /**
+         * Handles deleting a counter.
+         * @param {string} id - The ID of the counter to delete.
+         */
+        const handleDeleteCounter = async (id) => {
+            try {
+                await deleteCounterDB(id);
+                counters = counters.filter(c => c.id !== id); // Remove from local state
+                // Re-assign orderIndex for remaining counters after deletion
+                for (let i = 0; i < counters.length; i++) {
+                    counters[i].orderIndex = i;
+                    await updateCounterDB(counters[i]); // Persist the new orderIndex
+                }
+                renderApp(); // Re-render the app to reflect the deletion
+            } catch (error) {
+                console.error('Error deleting counter:', error);
+                showConfirmationModal('Failed to delete counter. Please try again.', () => {});
+            }
+        };
+
+        /**
+         * Initializes the application by loading existing counters and rendering the UI.
+         */
+        const initializeApp = async () => {
+            try {
+                await openDB();
+                counters = await getAllCountersDB();
+                // Ensure all loaded counters have an orderIndex, assign if missing
+                let needsUpdate = false;
+                counters.forEach((counter, index) => {
+                    if (counter.orderIndex === undefined || counter.orderIndex === null) {
+                        counter.orderIndex = index;
+                        needsUpdate = true;
+                    }
+                });
+
+                // If any counters were missing orderIndex, update them in DB
+                if (needsUpdate) {
+                    for (const counter of counters) {
+                        await updateCounterDB(counter);
+                    }
+                }
+
+                renderApp(); // Initial render of the application
+            }
+            catch (error) {
+                console.error("Failed to initialize app:", error);
+                // Display a user-friendly error message on the page
+                const appRoot = document.getElementById('app-root');
+                appRoot.innerHTML = '<div class="text-center text-red-600 text-xl col-span-full">Error loading application. Please try again or check console for details.</div>';
+            }
+        };
+
+        document.addEventListener('DOMContentLoaded', initializeApp);
+
+    </script>
+</body>
+</html>
